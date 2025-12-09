@@ -1,7 +1,7 @@
 # main.R ----------------------------------------------------------------
 # Project: Multi-dataset R momentum + backtesting (Data Ingest + EDA stage)
-# Goal: Pull asset + macro data, tidy it, and create clear, professional
-#       visualizations suitable for a work-in-progress check-in.
+# Goal: Pull asset + macro data, tidy it, and create clear, figures comparing
+# different strategies
 
 # -----------------------------------------------------------------------
 # 0. Setup
@@ -14,7 +14,7 @@ source("functions.R")  # uses get_price_data(), get_macro_data(), etc.
 # -----------------------------------------------------------------------
 # 1. Parameters 
 # -----------------------------------------------------------------------
-start_date <- as.Date("2025-01-01")
+start_date <- as.Date("2024-01-01")
 end_date   <- Sys.Date()
 
 # Might need to include other asssests such as gold and crypto
@@ -57,22 +57,20 @@ data_all <- combine_price_macro(prices_tidy, macro_tidy)
 data_all <- add_daily_returns(data_all)
 # Columns now: symbol, date, price, vix, tbill_3m, daily_return
 
-# Quick sanity check
 glimpse(data_all)
 
-# (Optional) save processed data for reproducibility
+# (Optional) could save processed data for reproducibility
 # dir.create("data", showWarnings = FALSE)
 # write_csv(data_all, file = "data/data_all.csv")
 
 # -----------------------------------------------------------------------
-# 4. Visualizations (for check-in)
+# 4. Visualizations 
 # -----------------------------------------------------------------------
-# NOTE: When you move to a Quarto (.qmd) document, each plot here can be
+# NOTE: Moving to a Quarto (.qmd) document, each plot here can be
 #       included as a figure with:
 #       - A chunk label (e.g., fig-prices)
 #       - A figure caption describing key patterns
 #       - Alt text (for accessibility) describing what the figure shows.
-#       That will directly support DA.5, Comm.3, Repro.6.
 
 # -----------------------------------------------------------------------
 # Figure 1: Asset prices over time (log scale)
@@ -80,6 +78,7 @@ glimpse(data_all)
 # Purpose:
 # - Compare growth and volatility across SPY, NVDA, UNH, RKLB, META.
 # - Log scale helps compare relative changes when prices differ in level.
+# - essentially normalizes the slope
 
 p_prices <- data_all %>%
   ggplot(aes(x = date,
@@ -104,7 +103,7 @@ p_prices <- data_all %>%
 
 print(p_prices)
 
-# Example alt text for Quarto later:
+# alt text for Quarto later:
 # "Line plot of daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META
 #  from January 2025 to present on a log10 scale, showing differing growth and volatility."
 
@@ -131,7 +130,7 @@ p_vix <- macro_tidy %>%
 
 print(p_vix)
 
-# Example alt text for Quarto:
+# alt text for Quarto:
 # "Line plot of the VIX index over time, with higher spikes indicating periods
 #  of elevated market volatility."
 
@@ -140,7 +139,7 @@ print(p_vix)
 # -----------------------------------------------------------------------
 # Purpose:
 # - Explore the typical size of daily moves in SPY.
-# - Connect to volatility and risk in a simple way.
+# - Possibly connect to volatility and risk in a simple way.
 
 p_returns_spy <- data_all %>%
   filter(symbol == "SPY",
@@ -163,12 +162,12 @@ p_returns_spy <- data_all %>%
 
 print(p_returns_spy)
 
-# Example alt text for Quarto:
+# Possible alt text for Quarto:
 # "Histogram of daily returns for SPY, showing a distribution centered near zero
 #  with a few large positive and negative outliers."
 
 # -----------------------------------------------------------------------
-# 5. (Optional) Save plots for use in slides / Quarto doc
+# 5. (Optional) Save plots for use 
 # -----------------------------------------------------------------------
 # dir.create("figures", showWarnings = FALSE)
 # ggsave("figures/fig1_prices_log.png",   p_prices,       width = 9, height = 5, dpi = 300)
@@ -176,11 +175,9 @@ print(p_returns_spy)
 # ggsave("figures/fig3_spy_returns.png", p_returns_spy,  width = 7, height = 4, dpi = 300)
 
 # -----------------------------------------------------------------------
-# 6. Clear continuation point
+# Continuation
 # -----------------------------------------------------------------------
 # From here, the next steps in the project will be:
 # - Use `data_all` to compute momentum signals (e.g., moving averages, lookback returns)
 # - Build backtesting functions that convert signals into positions and equity curves
 # - Add new figures that compare strategy performance over time.
-#
-# Those will support the algorithmic trading / momentum part of the project.
