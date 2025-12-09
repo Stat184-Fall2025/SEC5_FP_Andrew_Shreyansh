@@ -1,103 +1,186 @@
+# main.R ----------------------------------------------------------------
+# Project: Multi-dataset R momentum + backtesting (Data Ingest + EDA stage)
+# Goal: Pull asset + macro data, tidy it, and create clear, professional
+#       visualizations suitable for a work-in-progress check-in.
+
+# -----------------------------------------------------------------------
+# 0. Setup
+# -----------------------------------------------------------------------
 library(tidyverse)
 library(tidyquant)
 
-source("functions.R")
+source("functions.R")  # uses get_price_data(), get_macro_data(), etc.
 
+# -----------------------------------------------------------------------
+# 1. Parameters 
+# -----------------------------------------------------------------------
 start_date <- as.Date("2025-01-01")
 end_date   <- Sys.Date()
 
-# ----------------------------------------------------------------------
-# 1. Parameters
-# ----------------------------------------------------------------------
-
-# pulling data related to asset pricing
+# Might need to include other asssests such as gold and crypto
+# Asset tickers (equity focus)
 tickers <- c("SPY", "NVDA", "UNH", "RKLB", "META")
-asset_prices <- tq_get(tickers, 
-                       get = "stock.prices",
-                       from = start_date,
-                       to = end_date)
 
-# ----------------------------------------------------------------------
-# 2. Pull raw data from both sources
-# ----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# 2. Data ingest
+# -----------------------------------------------------------------------
+
+# 2a. Asset price data from Yahoo Finance
 prices_raw <- get_price_data(
   symbols = tickers,
   start   = start_date,
   end     = end_date
 )
 
+# 2b. Macro / volatility data (VIX + 3m T-bill)
 macro_raw <- get_macro_data(
   start = start_date,
   end   = end_date
 )
 
-# ----------------------------------------------------------------------
-# 3. Tidy each dataset
-# ----------------------------------------------------------------------
-prices_tidy <- tidy_price_data(prices_raw)
-macro_tidy  <- tidy_macro_data(macro_raw)
+# -----------------------------------------------------------------------
+# 3. Tidying & joining
+# -----------------------------------------------------------------------
 
-# Combine into one dataset: prices + VIX + TB3MS
+# 3a. Tidy asset prices
+prices_tidy <- tidy_price_data(prices_raw)
+# Columns: symbol, date, price
+
+# 3b. Tidy macro data
+macro_tidy  <- tidy_macro_data(macro_raw)
+# Columns: date, vix, tbill_3m
+
+# 3c. Combine into one dataset: asset prices + macro features
 data_all <- combine_price_macro(prices_tidy, macro_tidy)
 
-# Optional: add daily returns (for later steps)
+# 3d. Add daily returns (for later analysis / plots)
 data_all <- add_daily_returns(data_all)
+# Columns now: symbol, date, price, vix, tbill_3m, daily_return
 
-# Quick sanity check in console
+# Quick sanity check
 glimpse(data_all)
 
-# ----------------------------------------------------------------------
-# 4. Simple visualizations with ggplot2
-# ----------------------------------------------------------------------
+# (Optional) save processed data for reproducibility
+# dir.create("data", showWarnings = FALSE)
+# write_csv(data_all, file = "data/data_all.csv")
 
-# (a) Price paths for all tickers, faceted by symbol
+# -----------------------------------------------------------------------
+# 4. Visualizations (for check-in)
+# -----------------------------------------------------------------------
+# NOTE: When you move to a Quarto (.qmd) document, each plot here can be
+#       included as a figure with:
+#       - A chunk label (e.g., fig-prices)
+#       - A figure caption describing key patterns
+#       - Alt text (for accessibility) describing what the figure shows.
+#       That will directly support DA.5, Comm.3, Repro.6.
+
+# -----------------------------------------------------------------------
+# Figure 1: Asset prices over time (log scale)
+# -----------------------------------------------------------------------
+# Purpose:
+# - Compare growth and volatility across SPY, NVDA, UNH, RKLB, META.
+# - Log scale helps compare relative changes when prices differ in level.
+
 p_prices <- data_all %>%
-  ggplot(aes(x = date, y = price, color = symbol)) +
-  geom_line() +
-  facet_wrap(~ symbol, scales = "free_y") +
+  ggplot(aes(x = date,
+             y = price,
+             color = symbol,
+             linetype = symbol)) +
+  geom_line(linewidth = 0.6) +
+  scale_y_log10() +
   labs(
-    title = "Asset Prices Over Time",
+    title = "Daily Adjusted Closing Prices (Log Scale)",
+    subtitle = "Equity tickers: SPY, NVDA, UNH, RKLB, META",
     x = "Date",
-    y = "Adjusted Price"
+    y = "Adjusted closing price (USD, log10 scale)",
+    color = "Ticker",
+    linetype = "Ticker"
   ) +
   theme_minimal() +
-  theme(legend.position = "none")
+  theme(
+    plot.title      = element_text(face = "bold"),
+    legend.position = "right"
+  )
 
 print(p_prices)
 
-# (b) VIX over time (macro view)
+# Example alt text for Quarto later:
+# "Line plot of daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META
+#  from January 2025 to present on a log10 scale, showing differing growth and volatility."
+
+# -----------------------------------------------------------------------
+# Figure 2: Market volatility over time (VIX)
+# -----------------------------------------------------------------------
+# Purpose:
+# - Show how overall market volatility evolves over the sample.
+# - Gives context for periods where asset returns may be more extreme.
+
 p_vix <- macro_tidy %>%
   ggplot(aes(x = date, y = vix)) +
-  geom_line() +
+  geom_line(linewidth = 0.6) +
   labs(
-    title = "VIX (Market Volatility) Over Time",
+    title = "Market Volatility Over Time",
+    subtitle = "CBOE Volatility Index (VIX)",
     x = "Date",
-    y = "VIX Level"
+    y = "VIX level (index points)"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
 
 print(p_vix)
 
-# (c) Optional: daily returns distribution for one ticker (e.g. SPY)
+# Example alt text for Quarto:
+# "Line plot of the VIX index over time, with higher spikes indicating periods
+#  of elevated market volatility."
+
+# -----------------------------------------------------------------------
+# Figure 3: Distribution of daily returns for SPY
+# -----------------------------------------------------------------------
+# Purpose:
+# - Explore the typical size of daily moves in SPY.
+# - Connect to volatility and risk in a simple way.
+
 p_returns_spy <- data_all %>%
-  filter(symbol == "SPY", !is.na(daily_return)) %>%
+  filter(symbol == "SPY",
+         !is.na(daily_return)) %>%
   ggplot(aes(x = daily_return)) +
-  geom_histogram(bins = 40) +
+  geom_histogram(
+    bins  = 40,
+    color = "white"
+  ) +
   labs(
     title = "Distribution of Daily Returns – SPY",
-    x = "Daily Return",
-    y = "Count"
+    subtitle = "Daily log returns implied by adjusted prices",
+    x = "Daily return (proportion)",
+    y = "Number of trading days"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
 
 print(p_returns_spy)
 
-# You can later save these for your report/check-in:
-# ggsave("figures/prices_by_symbol.png", p_prices, width = 9, height = 5)
-# ggsave("figures/vix_over_time.png",    p_vix,    width = 9, height = 4)
-# ggsave("figures/spy_return_hist.png",  p_returns_spy, width = 7, height = 4)
+# Example alt text for Quarto:
+# "Histogram of daily returns for SPY, showing a distribution centered near zero
+#  with a few large positive and negative outliers."
 
+# -----------------------------------------------------------------------
+# 5. (Optional) Save plots for use in slides / Quarto doc
+# -----------------------------------------------------------------------
+# dir.create("figures", showWarnings = FALSE)
+# ggsave("figures/fig1_prices_log.png",   p_prices,       width = 9, height = 5, dpi = 300)
+# ggsave("figures/fig2_vix.png",         p_vix,          width = 9, height = 4, dpi = 300)
+# ggsave("figures/fig3_spy_returns.png", p_returns_spy,  width = 7, height = 4, dpi = 300)
 
-
-
-
+# -----------------------------------------------------------------------
+# 6. Clear continuation point
+# -----------------------------------------------------------------------
+# From here, the next steps in the project will be:
+# - Use `data_all` to compute momentum signals (e.g., moving averages, lookback returns)
+# - Build backtesting functions that convert signals into positions and equity curves
+# - Add new figures that compare strategy performance over time.
+#
+# Those will support the algorithmic trading / momentum part of the project.
