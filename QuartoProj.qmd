@@ -9,6 +9,9 @@ format:
   code-summary: "Show code"
   theme: cosmo
   embed-resources: true
+ pdf:
+    toc: true
+    number-sections: true
 execute:
   warning: false
   message: false
