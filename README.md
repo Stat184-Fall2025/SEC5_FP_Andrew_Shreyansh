@@ -1,6 +1,5 @@
-# Project Title
-
-Write a 1-2 sentences that quickly and clearly convey what your repo is for.
+# Trading Strategy Returns 
+This repo contains all relevant code and reproducible files for our project for STAT 184 involving the tracking of profit/loss across different trading strategies
 
 ## Overview
 
