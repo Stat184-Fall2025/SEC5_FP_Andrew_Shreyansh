@@ -1,0 +1,310 @@
+---
+title: "Stock Strategy Profit Tracking: Data Ingest + EDA"
+author: "Andrew Hoang and Shreyansh Agarwal"
+format: 
+  html:
+    toc: true
+    toc-location: left
+    code-fold: true
+    code-summary: "Show code"
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+The goal of this project is to build and evaluate stock strategies over time.  
+Eventually, we want to:
+
+- Pull in asset and macroeconomic data.
+- Engineer simple trading signals (like momentum).
+- Backtest those signals to see how different strategies would have performed.
+- Track profits and compare strategies in a consistent way.
+
+This Quarto document focuses on the **Data Ingest + Exploratory Data Analysis (EDA)** stage:
+
+- We pull daily price data for a small equity universe:
+  - `SPY`, `NVDA`, `UNH`, `RKLB`, `META`.
+- We also pull basic macro / risk context:
+  - `VIX` (market volatility proxy).
+  - 3-month T-bill rate (`TB3MS`) from FRED.
+- We clean and join these data into a single tibble called `data_all`.
+- Finally, we create three figures that help us understand:
+  1. How prices have evolved on a log scale.
+  2. How market volatility has moved over time.
+  3. How the daily returns of SPY are distributed.
+
+These plots will guide later design choices for momentum rules and backtesting.
+
+# Setup and Data Ingest
+
+In this section, we load the packages we need, source our helper functions from `functions.R`, set the main parameters (date range and tickers), and then pull and tidy the data.
+
+## Load packages and helper functions
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+
+source("functions.R")
+```
+
+The `functions.R` file contains small, focused helpers that keep the main analysis script clean:
+
+- `get_price_data()` pulls asset prices from Yahoo Finance.
+- `get_macro_data()` pulls VIX and a short-term T-bill rate.
+- `tidy_price_data()` and `tidy_macro_data()` put things into consistent, tidy formats.
+- `combine_price_macro()` joins price data with macro features.
+- `add_daily_returns()` computes simple daily returns by symbol.
+
+## Parameters: date range and tickers
+
+```{r}
+start_date <- as.Date("2024-01-01")
+end_date   <- Sys.Date()
+
+tickers <- c("SPY", "NVDA", "UNH", "RKLB", "META")
+
+start_date
+end_date
+tickers
+```
+
+- We start at the beginning of 2024.
+- We end at “today” (`Sys.Date()`), so this document always reflects the latest available data when we re-knit it.
+- The ticker list can easily be expanded later (e.g., to include gold, crypto, or sector ETFs).
+
+## Pull raw data
+
+```{r}
+# 1. Asset price data from Yahoo Finance
+prices_raw <- get_price_data(
+  symbols = tickers,
+  start   = start_date,
+  end     = end_date
+)
+
+# 2. Macro / volatility data (VIX + 3m T-bill)
+macro_raw <- get_macro_data(
+  start = start_date,
+  end   = end_date
+)
+
+# Quick sanity checks on the raw pulls
+dplyr::glimpse(prices_raw)
+dplyr::glimpse(macro_raw)
+```
+
+At this point:
+
+- `prices_raw` contains daily OHLCV data for each symbol.
+- `macro_raw` contains daily values for VIX and the 3-month T-bill rate, aligned by date.
+
+## Tidy and join the data
+
+Next, we move from the raw format to a single, tidy tibble that we can use throughout the project.
+
+```{r}
+# Tidy asset prices
+prices_tidy <- tidy_price_data(prices_raw)
+# Columns: symbol, date, price
+
+# Tidy macro data
+macro_tidy  <- tidy_macro_data(macro_raw)
+# Columns: date, vix, tbill_3m
+
+# Combine into one dataset: asset prices + macro features
+data_all <- combine_price_macro(prices_tidy, macro_tidy)
+
+# Add daily returns (for later analysis / plots)
+data_all <- add_daily_returns(data_all)
+# Columns now: symbol, date, price, vix, tbill_3m, daily_return
+
+dplyr::glimpse(data_all)
+```
+
+Key points:
+
+- Each row is one **symbol–date** combination.
+- The main columns we care about at this stage are:
+  - `symbol` – which asset.
+  - `date` – trading day.
+  - `price` – adjusted closing price.
+  - `vix` – market volatility level that day.
+  - `tbill_3m` – short-term interest rate (3-month T-bill).
+  - `daily_return` – simple daily percentage change in price.
+
+This structure makes it easy to:
+
+- Filter down to a single symbol.
+- Group by symbol or time period.
+- Join in future features (like moving averages, lookback returns, or strategy positions).
+
+# Exploratory Figures
+
+In this section, we move the plotting code that originally lived in `main.R` into Quarto chunks.  
+Each figure:
+
+- Recreates the original graph from the script.
+- Has a caption summarizing the key takeaway.
+- Has alt text for accessibility.
+
+## Figure 1: Asset prices over time (log scale)
+
+The first thing we want to understand is how each asset’s price has moved over time.
+
+Because SPY, NVDA, UNH, RKLB, and META trade at very different price levels, plotting them on the **same linear scale** can be misleading. A jump from \$10 to \$20 looks small next to a move from \$400 to \$420, even though the first is a 100% gain and the second is only 5%.
+
+To make these relative changes easier to compare, we plot prices on a **log10 scale**, mirroring the original `p_prices` object in `main.R`:
+
+```{r fig-prices, echo=FALSE, fig.cap="Daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META on a log10 scale, highlighting relative growth and volatility across assets.", fig.alt="Line plot of daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META from early 2024 to the present on a log10 scale. Each ticker is displayed with a different color and line type, allowing comparison of relative growth rates and volatility over time."}
+data_all %>%
+  ggplot(aes(
+    x        = date,
+    y        = price,
+    color    = symbol,
+    linetype = symbol
+  )) +
+  geom_line(linewidth = 0.6) +
+  scale_y_log10() +
+  labs(
+    title    = "Daily Adjusted Closing Prices (Log Scale)",
+    subtitle = "Equity tickers: SPY, NVDA, UNH, RKLB, META",
+    x        = "Date",
+    y        = "Adjusted closing price (USD, log10 scale)",
+    color    = "Ticker",
+    linetype = "Ticker"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(face = "bold"),
+    legend.position = "right"
+  )
+```
+
+How to read this plot:
+
+- A **straight line** on a log scale implies roughly constant percentage growth.
+- A **steeper slope** means faster relative growth.
+- **Wigglier** lines indicate more volatility.
+- By looking at these curves side by side, we get a quick sense of:
+  - Which assets have been trending up or down.
+  - Which assets are more volatile.
+  - How individual asset behavior compares to the broad market proxy (SPY).
+
+This is the “big picture” price context before we build any strategy rules.
+
+## Figure 2: Market volatility over time (VIX)
+
+The second figure looks at **market-wide volatility** using the CBOE Volatility Index (VIX).  
+VIX is often interpreted as a “fear gauge”: higher values are associated with more uncertainty and bigger expected moves in the market.
+
+This chunk reproduces the original `p_vix` plot:
+
+```{r fig-vix, echo=FALSE, fig.cap="Market volatility over time measured by the CBOE Volatility Index (VIX), providing context for periods of higher risk and larger price swings.", fig.alt="Line plot of the VIX index over time. The line is mostly at moderate levels with occasional upward spikes that indicate periods of elevated market volatility and investor uncertainty."}
+macro_tidy %>%
+  ggplot(aes(x = date, y = vix)) +
+  geom_line(linewidth = 0.6) +
+  labs(
+    title    = "Market Volatility Over Time",
+    subtitle = "CBOE Volatility Index (VIX)",
+    x        = "Date",
+    y        = "VIX level (index points)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+How this helps the project:
+
+- Spikes in VIX usually line up with **stressful periods** in the market.
+- When we eventually backtest strategies, we might see that:
+  - Some strategies struggle during high-volatility periods.
+  - Others perform better when volatility is elevated.
+- Knowing where these VIX spikes are helps later when interpreting strategy drawdowns and sharp run-ups.
+
+In short, this figure gives a **macro “backdrop”** for everything else that happens in asset prices.
+
+## Figure 3: Distribution of daily returns for SPY
+
+Next, we zoom in on a single asset—SPY—as a simple starting point for thinking about **risk**.
+
+We look at the **distribution of daily returns**. This tells us:
+
+- How big “typical” daily moves are.
+- Whether the distribution is symmetric around zero or skewed.
+- Whether there are many extreme outliers (very large gains or losses).
+
+This chunk is the Quarto version of the original `p_returns_spy` histogram:
+
+```{r fig-spy-returns, echo=FALSE, fig.cap="Histogram of simple daily returns for SPY, showing the typical size of day-to-day moves and the presence of a few large outliers.", fig.alt="Histogram of daily percentage returns for SPY. Most bars are clustered near zero return, with thinner bars extending out to larger positive and negative values, indicating that big moves happen but are less common than small moves."}
+data_all %>%
+  filter(symbol == "SPY", !is.na(daily_return)) %>%
+  ggplot(aes(x = daily_return)) +
+  geom_histogram(
+    bins  = 40,
+    color = "white"
+  ) +
+  labs(
+    title    = "Distribution of Daily Returns – SPY",
+    subtitle = "Simple daily percentage returns based on adjusted prices",
+    x        = "Daily return (proportion)",
+    y        = "Number of trading days"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+Interpretation:
+
+- Most daily returns cluster near **0**, meaning day-to-day moves are usually small.
+- The **tails** show that occasionally there are very large positive or negative moves.
+- This is a reminder that:
+  - Strategies need to be prepared for rare but impactful events.
+  - Risk management (position sizing, stop losses, diversification) matters.
+
+Later, we can generalize this analysis:
+
+- Compare return distributions across other tickers (e.g., NVDA vs. SPY).
+- Look at **rolling volatility** or **downside risk** (e.g., focusing on negative returns only).
+
+# How this EDA connects to strategy and profit tracking
+
+This initial EDA stage sets the foundation for the core project:
+
+- We now have a clean, consistent dataset in `data_all` that combines:
+  - Asset prices.
+  - Macro variables (VIX, T-bill rate).
+  - Daily returns.
+- We have a basic understanding of:
+  - How each asset’s price path looks on a log scale.
+  - When the market has been most volatile.
+  - How large typical daily moves are for SPY.
+
+From here, the next steps will be:
+
+1. **Feature engineering / signal construction**
+   - Compute momentum indicators (e.g., 1-month, 3-month, 6-month lookback returns).
+   - Add moving averages and other trend / volatility features.
+
+2. **Backtesting framework**
+   - Translate signals into positions (long, flat, or potentially short).
+   - Track portfolio value over time.
+   - Compare strategy equity curves to simple benchmarks (like buy-and-hold SPY).
+
+3. **Profit tracking and visualization**
+   - Build figures that show:
+     - Cumulative returns for each strategy.
+     - Drawdowns over time.
+     - Risk-adjusted performance metrics.
+
+This Quarto document now serves as the **front-end EDA report** for the project, documenting:
+
+- How we ingest and tidy the data.
+- How we visualize the main behaviors in prices, volatility, and returns.
+- Why these pieces of information matter for designing and understanding stock strategies.
