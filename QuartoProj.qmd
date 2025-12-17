@@ -1,0 +1,593 @@
+---
+title: "Stock Strategy Profit Tracking: Data Ingest + EDA + First Strategy"
+author: "Andrew Hoang and Shreyansh Agarwal"
+format: 
+ html:
+  toc: true
+  toc-location: left
+  code-fold: true
+  code-summary: "Show code"
+  theme: cosmo
+  embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+  
+# Introduction
+  
+This project builds and tests stock trading strategies to see how they would have performed over time. We want to answer questions like: Would a simple momentum strategy beat just buying and holding SPY? How do different stocks behave during volatile periods? What kind of returns can we actually expect?
+
+Our goals are to:
+  
+- Pull price data for stocks and ETFs we're interested in
+- Get some economic context data (like market volatility)
+- Build simple trading signals (like "buy when price is trending up")
+- Test those signals against historical data
+- Track how much money each strategy would have made or lost
+
+This document covers the **data collection and exploration** phase, plus our **first basic strategy**. We're pulling daily prices for SPY, NVDA, UNH, RKLB, and META, along with the VIX (volatility index) and 3-month Treasury bill rates. After cleaning everything up, we'll make some charts to understand what's going on, then test a 50-day moving average strategy against a simple buy-and-hold approach.
+
+---
+
+# Analysis Approach and Design Choices
+
+## Paradigms We're Using
+
+**For Coding: Tidyverse**
+
+We're using the Tidyverse approach for all our R code rather than base R. The Tidyverse gives us tools like `dplyr` for data manipulation and `ggplot2` for visualization that make the code easier to read and understand. The pipe operator (`%>%`) lets us chain operations together in a logical flow, which is helpful when we're doing multiple steps of data processing. Plus, the consistent syntax across Tidyverse packages means once you learn one, the others follow similar patterns.
+
+**For Analysis: Exploratory Data Analysis (EDA)**
+
+We're doing Exploratory Data Analysis here, not confirmatory statistics. What's the difference? In confirmatory analysis, you have a specific hypothesis you're testing with statistical tests. In EDA, we're trying to understand patterns in the data, spot outliers, and figure out what questions we should even be asking. We're looking at price movements, volatility patterns, and return distributions to get a feel for how these assets behave before we commit to any specific trading strategy. This exploration helps us make smarter decisions about what strategies might actually work.
+
+## Data Provenance and Ethics
+
+### Data Sources
+
+All data used in this analysis comes from publicly available sources:
+
+**Stock Price Data**: Yahoo Finance via the `tidyquant` package (Yahoo Finance, n.d.). This includes daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META from January 1, 2024 to present.
+
+**Volatility Data**: CBOE Volatility Index (VIX) via Yahoo Finance (CBOE, n.d.). The VIX measures expected market volatility over the next 30 days.
+
+**Interest Rate Data**: 3-Month Treasury Bill Rate (TB3MS) from Federal Reserve Economic Data (FRED) via the `tidyquant` package (Board of Governors of the Federal Reserve System, 2024).
+
+### FAIR Principles
+
+We're trying to follow FAIR data principles where possible:
+
+- **Findable**: Our data sources are well-documented public APIs that others can access. We include the exact tickers and date ranges used.
+- **Accessible**: Yahoo Finance and FRED data are freely available to anyone. No proprietary data sources were used.
+- **Interoperable**: We store everything in standard tidy data formats (tibbles/data frames) that work with any R analysis tools.
+- **Reusable**: By documenting our sources and using reproducible code with `tidyquant`, someone else could re-run this analysis or extend it to other tickers and time periods.
+
+### CARE Principles
+
+Since we're working with publicly traded company data and government economic statistics, CARE principles (Collective benefit, Authority to control, Responsibility, Ethics) are less directly applicable than they would be with Indigenous data or personal information. However, we still keep these ideas in mind:
+
+- We're using publicly disclosed financial data that companies have chosen to make available
+- We're not making investment recommendations or claiming to have special authority over this information
+- We acknowledge that past performance doesn't guarantee future results, and our backtests are educational exercises, not financial advice
+- We're being transparent about our methods and limitations so others can critically evaluate our work
+
+---
+  
+# Setup and Data Ingest
+  
+This section loads the packages we need, sources our helper functions, sets up the date range and stock tickers we want to analyze, and then pulls all the data.
+
+## Load packages and helper functions
+
+```{r setup, include=FALSE}
+library(tidyverse)   # Core data manipulation and visualization
+library(tidyquant)   # Financial data and analysis tools
+library(scales)      # Formatting for plots
+library(moments)     # Statistical calculations like skewness
+source("functions.R")
+```
+
+We wrote small helper functions in `functions.R` to keep this main file cleaner. Those functions handle specific tasks like pulling price data from Yahoo Finance or calculating moving averages. Breaking things into functions means we can reuse them later and makes the code easier to test and debug.
+
+## Parameters: date range and tickers
+
+```{r}
+# PLAN: Set up our analysis time period and which assets to track
+start_date <- as.Date("2024-01-01")
+end_date   <- Sys.Date()  # Always uses today's date when we re-run this
+
+tickers <- c("SPY", "NVDA", "UNH", "RKLB", "META")
+
+start_date
+end_date
+tickers
+```
+
+We're starting from January 1, 2024 and going up to today. Using `Sys.Date()` means this document always shows current data when we re-knit it. We picked this mix of tickers to get different types of assets: SPY is the S&P 500 ETF (broad market), NVDA is a major tech stock, UNH is healthcare, RKLB is a smaller space company, and META is social media/tech. This gives us some diversity to see how different sectors behave.
+
+## Pull raw data
+
+```{r}
+# PLAN: Get price data for our stocks and economic context data
+# 1. Asset price data from Yahoo Finance
+prices_raw <- get_price_data(
+  symbols = tickers,
+  start   = start_date,
+  end     = end_date
+)
+
+# 2. Macro / volatility data (VIX + 3m T-bill)
+macro_raw <- get_macro_data(
+  start = start_date,
+  end   = end_date
+)
+
+# Quick check that we got the data
+dplyr::glimpse(prices_raw)
+dplyr::glimpse(macro_raw)
+```
+
+Right now `prices_raw` has the raw daily Open, High, Low, Close, Volume data for each stock, and `macro_raw` has the VIX and Treasury bill rate. Everything is organized by date so we can match them up later.
+
+## Tidy and join the data
+
+Now we clean up the raw data and combine everything into one dataset that's easier to work with.
+
+```{r}
+# PLAN: Clean up the data and combine stocks with economic indicators
+# Tidy asset prices - keep just symbol, date, and adjusted price
+prices_tidy <- tidy_price_data(prices_raw)
+# Columns: symbol, date, price
+
+# Tidy macro data - organize VIX and T-bill rate by date
+macro_tidy  <- tidy_macro_data(macro_raw)
+# Columns: date, vix, tbill_3m
+
+# Combine into one dataset: asset prices + macro features
+data_all <- combine_price_macro(prices_tidy, macro_tidy)
+
+# Add daily returns (how much each stock went up or down each day)
+data_all <- add_daily_returns(data_all)
+# Columns now: symbol, date, price, vix, tbill_3m, daily_return
+
+# Check the structure of our final dataset
+dplyr::glimpse(data_all)
+
+# IMPROVE: Let's verify we have complete data for all symbols
+data_all %>%
+  group_by(symbol) %>%
+  summarise(
+    n_days = n(),
+    missing_prices = sum(is.na(price)),
+    missing_returns = sum(is.na(daily_return))
+  ) %>%
+  knitr::kable(caption = "Data completeness check by symbol")
+```
+
+Each row in `data_all` represents one stock on one trading day. For example, one row might be SPY on January 5, 2024 with its price, that day's VIX level, the T-bill rate, and how much SPY's price changed that day. This "long" format makes it easy to filter to specific stocks, group by time periods, or add new calculated columns.
+
+We also check for missing data here. The first day will have missing returns (no previous day to compare to), which is expected and fine.
+
+---
+
+# Exploratory Figures
+
+Now we'll make some charts to understand what's been happening with these stocks and the overall market. Each chart is trying to answer a specific question about the data.
+
+## Figure 1: Asset prices over time (log scale)
+
+First question: How have these stocks moved over time?
+
+The tricky thing is that different stocks trade at very different prices. SPY might be around $500 while NVDA could be at $140 (or whatever it is when we run this). If we plot them on a regular scale, small percentage moves in expensive stocks look huge compared to big percentage moves in cheaper stocks. That's misleading because what we actually care about is the percentage gain or loss.
+
+Using a log scale fixes this. On a log scale, moving from $10 to $20 takes up the same visual space as moving from $100 to $200, because both are 100% gains.
+
+```{r fig-prices, echo=FALSE, fig.cap="Daily adjusted closing prices for SPY, NVDA, UNH, RKLB, and META on a log scale. This lets us compare percentage changes across stocks that trade at different price levels. Each stock gets its own color and line style for easier identification.", fig.alt="Line plot showing five different stocks' prices over time on a logarithmic scale. Each stock has a different colored line and line style (solid, dashed, dotted, etc.). The lines show various trajectories with some going up, some volatile, and some relatively flat, making it easy to compare their relative performance."}
+# PLAN: Create a line plot with log scale for price comparison
+data_all %>%
+  ggplot(aes(
+    x        = date,
+    y        = price,
+    color    = symbol,
+    linetype = symbol  # Adding linetype for accessibility (not just color)
+  )) +
+  geom_line(linewidth = 0.6) +
+  scale_y_log10() +
+  scale_color_brewer(palette = "Set1") +  # Colorblind-friendly palette
+  labs(
+    title    = "Daily Adjusted Closing Prices (Log Scale)",
+    subtitle = "Equity tickers: SPY, NVDA, UNH, RKLB, META",
+    x        = "Date",
+    y        = "Adjusted closing price (USD, log scale)",
+    color    = "Ticker",
+    linetype = "Ticker"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_text(face = "bold"),
+    legend.position = "right"
+  )
+```
+
+### What stands out in the price movements?
+
+```{r}
+# Calculate how much each stock gained or lost over the whole period
+price_analysis <- data_all %>%
+  group_by(symbol) %>%
+  arrange(date) %>%
+  summarise(
+    start_price = first(price),
+    end_price = last(price),
+    total_return = (last(price) / first(price) - 1) * 100,
+    avg_price = mean(price, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_return))
+
+knitr::kable(price_analysis, 
+             digits = 2,
+             col.names = c("Symbol", "Start Price ($)", "End Price ($)", 
+                          "Total Return (%)", "Avg Price ($)"),
+             caption = "Price performance summary for all assets")
+```
+
+Looking at the chart and table, we can see some clear patterns. The steeper the line on the log chart, the faster that stock grew (or fell) in percentage terms. Stocks with wiggly lines had more day-to-day volatility. Some stocks might have strong overall trends (consistently up or down), while others might have reversed direction during the period.
+
+The table shows us the exact numbers - which stock had the highest total return, which was more stable, etc. This gives us context before we build any trading strategies. For example, if RKLB was super volatile, we might want to be more careful about position sizing with that stock.
+
+## Figure 2: Market volatility over time (VIX)
+
+Next question: When was the market most scared or uncertain?
+
+The VIX (sometimes called the "fear gauge") measures expected volatility in the S&P 500 over the next 30 days. When investors are nervous, the VIX goes up. When things are calm, it goes down. Generally, VIX below 15 is considered low volatility, 15-20 is normal, 20-30 means things are getting sketchy, and above 30 means markets are stressed.
+
+```{r fig-vix, echo=FALSE, fig.cap="Market volatility measured by the VIX index over time. Higher spikes indicate periods when investors expected bigger price swings and more uncertainty. The dashed lines at 20 and 30 mark common thresholds for elevated and high volatility.", fig.alt="Line chart of the VIX volatility index over time, shown in red. The line generally stays in a moderate range with occasional sharp spikes upward indicating periods of market stress. Two horizontal dashed lines mark the 20 and 30 levels as reference points."}
+# PLAN: Plot VIX over time to identify volatile periods
+macro_tidy %>%
+  ggplot(aes(x = date, y = vix)) +
+  geom_line(linewidth = 0.6, color = "#E63946") +
+  geom_hline(yintercept = 20, linetype = "dashed", alpha = 0.5) +
+  geom_hline(yintercept = 30, linetype = "dashed", alpha = 0.5) +
+  labs(
+    title    = "Market Volatility Over Time",
+    subtitle = "CBOE Volatility Index (VIX)",
+    x        = "Date",
+    y        = "VIX level (index points)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+### Volatility regime patterns
+
+```{r}
+# PLAN: Categorize trading days by VIX level
+# Calculate VIX statistics
+vix_analysis <- macro_tidy %>%
+  summarise(
+    mean_vix = mean(vix, na.rm = TRUE),
+    median_vix = median(vix, na.rm = TRUE),
+    max_vix = max(vix, na.rm = TRUE),
+    min_vix = min(vix, na.rm = TRUE),
+    sd_vix = sd(vix, na.rm = TRUE),
+    days_high_vol = sum(vix > 20, na.rm = TRUE),
+    days_extreme_vol = sum(vix > 30, na.rm = TRUE)
+  )
+
+# Count how many days fell into each volatility category
+vix_regimes <- macro_tidy %>%
+  mutate(
+    regime = case_when(
+      vix < 15 ~ "Low volatility (VIX < 15)",
+      vix < 20 ~ "Normal volatility (15-20)",
+      vix < 30 ~ "Elevated volatility (20-30)",
+      TRUE ~ "High volatility (VIX > 30)"
+    )
+  ) %>%
+  count(regime) %>%
+  mutate(pct = n / sum(n) * 100)
+
+knitr::kable(vix_regimes, 
+             digits = 1,
+             col.names = c("Volatility Regime", "Days", "Percentage (%)"),
+             caption = "Distribution of trading days across VIX regimes")
+```
+
+The VIX averaged **`r round(vix_analysis$mean_vix, 1)`** over this period, with a maximum of **`r round(vix_analysis$max_vix, 1)`**. 
+
+Looking at the chart, we can identify specific periods of market stress where the VIX spiked. These spikes usually line up with events that made investors nervous - maybe economic news, geopolitical stuff, or just general uncertainty. The table shows what percentage of time we spent in each volatility regime. This matters for trading strategies because some approaches work better in calm markets while others might do okay (or even better) when things are volatile.
+
+## Figure 3: Distribution of daily returns for SPY
+
+Last question before we build a strategy: What do "normal" daily returns look like?
+
+We're focusing on SPY here because it's the broad market benchmark. Understanding its return distribution helps us think about risk. Most days, stocks don't move that much. But occasionally there are big jumps (up or down). This histogram shows us how often different-sized moves happen.
+
+```{r fig-spy-returns, echo=FALSE, fig.cap="Histogram showing how often SPY had different-sized daily returns. Most days cluster near zero (small moves), with fewer days showing large gains or losses. This gives us a sense of typical day-to-day volatility.", fig.alt="Histogram with bars showing the frequency of different daily return sizes for SPY. The tallest bars are near zero return, creating a bell-like shape. The bars get shorter as you move toward larger positive or negative returns, with a few outlier bars representing extreme moves. A vertical dashed line marks the zero return point."}
+# PLAN: Create histogram of daily returns to understand risk profile
+data_all %>%
+  filter(symbol == "SPY", !is.na(daily_return)) %>%
+  ggplot(aes(x = daily_return)) +
+  geom_histogram(
+    bins  = 40,
+    fill  = "#2A9D8F",
+    color = "white"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  labs(
+    title    = "Distribution of Daily Returns – SPY",
+    subtitle = "Simple daily percentage returns based on adjusted prices",
+    x        = "Daily return (proportion)",
+    y        = "Number of trading days"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+### Return characteristics across all assets
+
+```{r}
+# PLAN: Calculate key statistics for returns across all symbols
+return_stats <- data_all %>%
+  filter(!is.na(daily_return)) %>%
+  group_by(symbol) %>%
+  summarise(
+    mean_return = mean(daily_return, na.rm = TRUE) * 100,
+    median_return = median(daily_return, na.rm = TRUE) * 100,
+    sd_return = sd(daily_return, na.rm = TRUE) * 100,
+    min_return = min(daily_return, na.rm = TRUE) * 100,
+    max_return = max(daily_return, na.rm = TRUE) * 100,
+    skewness = moments::skewness(daily_return, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_return))
+
+knitr::kable(return_stats, 
+             digits = 3,
+             col.names = c("Symbol", "Mean (%)", "Median (%)", "Std Dev (%)", 
+                          "Min (%)", "Max (%)", "Skewness"),
+             caption = "Daily return statistics across all assets")
+```
+
+The histogram and table tell us several things. First, the overall shape - most returns bunch up near zero, with the frequency dropping off as moves get bigger. That makes sense: huge 5% days are rarer than quiet 0.2% days.
+
+Second, we can spot asymmetry. If the distribution is skewed, that means extreme moves aren't balanced. Positive skewness means we saw more extremely positive days than extremely negative ones (or vice versa for negative skewness). The standard deviation tells us typical volatility - higher numbers mean more jumpy, unpredictable returns.
+
+We also see the extreme outliers in the Min and Max columns - the worst single-day loss and best single-day gain. These outliers matter because any trading strategy needs to be able to handle these rare but painful events without blowing up.
+
+---
+
+# First Strategy: 50-day SMA Momentum vs Buy-and-Hold SPY
+
+Okay, now for the fun part - actually testing a trading strategy.
+
+The idea is simple: use a 50-day moving average as a trend indicator. If a stock's price is above its 50-day average, that suggests an uptrend, so we hold it. If it drops below, that might mean the trend is weakening, so we sell and go to cash. We'll apply this rule to all five stocks, hold equal amounts when we're in, and see how that compares to just buying SPY and holding it the whole time.
+
+## Build the momentum signal and run the backtest
+
+```{r}
+# PLAN: Add moving average signal and backtest the strategy
+# Add 50-day SMA momentum signal
+data_all <- add_sma_momentum(data_all, window = 50)
+
+# Backtest the 50-day SMA strategy 
+# (holds each stock equally when signal is positive)
+bt_ma50 <- backtest_long_only(
+  data = data_all,
+  signal_col = "momentum_signal",
+  strategy_name = "50-day SMA momentum"
+)
+
+# Build buy-and-hold SPY benchmark for comparison
+bh_spy <- data_all %>%
+  filter(symbol == "SPY") %>%
+  arrange(date) %>%
+  mutate(
+    bh_return = daily_return,
+    bh_equity = cumprod(1 + tidyr::replace_na(bh_return, 0))
+  ) %>%
+  select(date, bh_equity)
+
+# Combine both strategies' equity curves
+equity_compare <- bt_ma50$data %>%
+  select(date, equity) %>%
+  dplyr::left_join(bh_spy, by = "date")
+
+dplyr::glimpse(equity_compare)
+```
+
+## Figure 4: Equity curve comparison
+
+This chart shows the growth of $1 invested in each strategy. If a line is higher, that strategy made more money (or lost less). The solid line is our momentum strategy, the dashed line is just buying and holding SPY.
+
+```{r fig-equity, echo=FALSE, fig.cap="Growth of $1 invested in the 50-day SMA momentum strategy (solid line) compared to buying and holding SPY (dashed line). Higher lines mean better performance. Both start at $1 and diverge based on their different approaches.", fig.alt="Line chart showing two equity curves over time. The solid line represents the momentum strategy and the dashed line represents the SPY buy-and-hold benchmark. Both start at a value of 1 and show different trajectories over the time period, with various periods where one outperforms the other."}
+# PLAN: Compare strategy performance visually
+equity_compare %>%
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = equity, color = "50-day SMA Strategy", 
+                linetype = "50-day SMA Strategy"), 
+            linewidth = 0.8) +
+  geom_line(aes(y = bh_equity, color = "Buy-and-Hold SPY",
+                linetype = "Buy-and-Hold SPY"), 
+            linewidth = 0.8) +
+  scale_color_manual(
+    values = c("50-day SMA Strategy" = "#2E86AB", 
+               "Buy-and-Hold SPY" = "#A23B72")
+  ) +
+  scale_linetype_manual(
+    values = c("50-day SMA Strategy" = "solid",
+               "Buy-and-Hold SPY" = "dashed")
+  ) +
+  labs(
+    title = "Equity Curve: 50-day SMA Strategy vs Buy-and-Hold SPY",
+    subtitle = "Multi-asset SMA momentum strategy compared to SPY benchmark",
+    x = "Date",
+    y = "Portfolio value (start = 1)",
+    color = "Strategy",
+    linetype = "Strategy"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+## Summary metrics for the strategy
+
+```{r}
+#| echo: false
+#| label: tbl-metrics
+#| tbl-cap: "Performance metrics for the 50-day SMA momentum strategy"
+
+# PLAN: Display key performance metrics in a clean table
+tibble::tibble(
+  Metric = c("Total return", "Annualized return", 
+             "Annualized volatility", "Sharpe ratio"),
+  Value = c(
+    scales::percent(bt_ma50$total_return, accuracy = 0.01),
+    scales::percent(bt_ma50$annual_return, accuracy = 0.01),
+    scales::percent(bt_ma50$annual_vol, accuracy = 0.01),
+    round(bt_ma50$sharpe, 3)
+  )
+) %>%
+  knitr::kable()
+```
+
+These metrics give us the bottom line:
+
+- **Total return**: Did we make or lose money overall?
+- **Annualized return**: What's the average yearly growth rate?
+- **Annualized volatility**: How bumpy was the ride (higher = more risk)?
+- **Sharpe ratio**: Risk-adjusted performance (higher is better - it means you got more return per unit of risk)
+
+## Strategy Analysis: Performance Deep Dive
+
+### Position activity - when were we actually invested?
+
+```{r}
+# PLAN: Analyze how much time we spent holding each stock
+position_analysis <- data_all %>%
+  filter(!is.na(momentum_signal)) %>%
+  group_by(symbol) %>%
+  summarise(
+    total_days = n(),
+    days_invested = sum(momentum_signal == 1, na.rm = TRUE),
+    pct_invested = days_invested / total_days * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pct_invested))
+
+knitr::kable(position_analysis, 
+             digits = 1,
+             col.names = c("Symbol", "Total Days", "Days Invested", 
+                          "% Time Invested"),
+             caption = "Trading activity: how often was each asset held?")
+```
+
+This table shows what percentage of the time we actually owned each stock. A higher percentage means that stock spent more time in an uptrend (above its 50-day average). If a stock was only held 40% of the time, that means it was below its moving average - and we were in cash - for the other 60%. This matters because sitting in cash means missing gains if the stock suddenly rallies, but it also protects us from losses during downtrends.
+
+### Drawdown analysis - how bad did it get?
+
+Drawdown measures how much you're down from your peak. If you hit $110, then drop to $100, that's a 9% drawdown. It's basically "how much did I lose from my best point so far?" Smaller drawdowns are better because they mean less pain and less risk of panicking and selling at the wrong time.
+
+```{r}
+# PLAN: Calculate drawdowns to measure downside risk
+equity_curve <- bt_ma50$data %>%
+  mutate(
+    cummax_equity = cummax(equity),  # Track the highest point so far
+    drawdown = (equity / cummax_equity - 1) * 100
+  )
+
+max_dd <- min(equity_curve$drawdown, na.rm = TRUE)
+max_dd_date <- equity_curve %>%
+  filter(drawdown == max_dd) %>%
+  pull(date) %>%
+  first()
+
+# Calculate drawdown for SPY benchmark too
+spy_dd <- equity_compare %>%
+  mutate(
+    cummax_spy = cummax(bh_equity),
+    spy_drawdown = (bh_equity / cummax_spy - 1) * 100
+  )
+
+max_spy_dd <- min(spy_dd$spy_drawdown, na.rm = TRUE)
+```
+
+```{r fig-drawdown, echo=FALSE, fig.cap="Drawdown chart showing percentage decline from peak equity for the momentum strategy. Periods near zero mean we're at or near all-time highs. Dips show how much we were down from the peak at various points.", fig.alt="Line chart of drawdown over time shown in red. The line fluctuates below zero (negative percentages) indicating various periods where the strategy was below its previous peak value. Deeper dips indicate more severe drawdowns. A horizontal dashed line at zero marks the peak equity level."}
+# PLAN: Visualize drawdowns over time
+equity_curve %>%
+  ggplot(aes(x = date, y = drawdown)) +
+  geom_line(color = "#E63946", linewidth = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.3) +
+  labs(
+    title = "Strategy Drawdown Over Time",
+    subtitle = "Percentage decline from peak equity",
+    x = "Date",
+    y = "Drawdown (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+**Key drawdown statistics:**
+  
+- **Strategy maximum drawdown**: `r round(max_dd, 2)`% (occurred on `r format(max_dd_date, "%B %d, %Y")`)
+- **SPY benchmark maximum drawdown**: `r round(max_spy_dd, 2)`%
+
+The chart shows every point where we were below our previous high water mark. The biggest dip is the maximum drawdown - the worst peak-to-trough loss we experienced. Comparing our strategy's max drawdown to SPY's tells us if we're taking on more or less risk. If our drawdown is smaller, that's good - we protected capital better during down periods. If it's bigger, we might need to think about adding some risk management rules.
+
+### Return contribution by asset - which stocks helped most?
+
+```{r}
+# PLAN: Break down performance by individual stock
+asset_contribution <- data_all %>%
+  filter(!is.na(momentum_signal), !is.na(daily_return)) %>%
+  group_by(symbol) %>%
+  mutate(signal_lag = lag(momentum_signal, default = 0)) %>%
+  summarise(
+    strategy_return = sum(signal_lag * daily_return, na.rm = TRUE) * 100,
+    buy_hold_return = sum(daily_return, na.rm = TRUE) * 100,
+    outperformance = strategy_return - buy_hold_return,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(strategy_return))
+
+knitr::kable(asset_contribution, 
+             digits = 2,
+             col.names = c("Symbol", "Strategy Return (%)", 
+                          "Buy-Hold Return (%)", "Outperformance (%)"),
+             caption = "Return contribution from each asset using the momentum strategy")
+```
+
+This breakdown shows which stocks actually made us money under the momentum rule versus just holding them. Positive outperformance means the timing signal helped - we held during good periods and got out during bad ones. Negative outperformance means we would have been better off just holding that stock the whole time.
+
+Looking at these numbers helps us understand if the strategy works better for some types of stocks than others. Maybe it works great for volatile tech stocks but poorly for stable blue chips. That insight could guide how we build the next version of the strategy.
+
+---
+
+# Connecting This to Profit Tracking Goals
+
+So what did we actually accomplish here?
+
+## What we built:
+
+1. **A clean dataset** (`data_all`) that has:
+   - Daily prices for our five stocks
+   - VIX and T-bill rates for context
+   - Calculated daily returns
+   - A momentum signal based on 50-day moving averages
+
+2. **Real analysis** showing:
+   - Which stocks gained or lost the most over the period
+   - When the market was stressed (high VIX)
+   - What typical daily moves look like
