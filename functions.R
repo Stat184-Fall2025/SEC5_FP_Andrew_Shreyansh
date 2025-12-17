@@ -96,7 +96,7 @@ combine_price_macro <- function(prices_tidy, macro_tidy) {
 #'
 #' @param data_all Tibble with symbol, date, price.
 #'
-#' @return Tibble with an added daily_return column.
+#' @return Tibble with an added daily_return column.``
 #' @details
 #' This is where we will continue later for the momentum / backtesting part
 #' of the project.
